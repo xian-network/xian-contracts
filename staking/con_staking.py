@@ -1,11 +1,11 @@
 # General Multi-Token Staking Contract
 # State Variables
-pools = Hash()  # pool_id -> pool configuration
-stakes = Hash()  # (pool_id, staker) -> stake info
+pools = Hash()
+stakes = Hash()
 pool_counter = Variable()
 paused = Variable()
 contract_owner = Variable()
-pool_stats = Hash()  # pool_id -> stats (total_staked, current_positions)
+pool_stats = Hash()
 
 # Events
 PoolCreatedEvent = LogEvent(
@@ -15,7 +15,7 @@ PoolCreatedEvent = LogEvent(
         "creator": {"type": str, "idx": True},
         "stake_token": {"type": str, "idx": True},
         "reward_token": {"type": str},
-        "apy": {"type": (int, float)},
+        "apy": {"type": (int, float, decimal)},
         "lock_duration": {"type": int},
         "max_positions": {"type": int}
     }
@@ -26,8 +26,8 @@ StakeEvent = LogEvent(
     params={
         "pool_id": {"type": str, "idx": True},
         "staker": {"type": str, "idx": True},
-        "amount": {"type": (int, float)},
-        "entry_fee": {"type": (int, float)}
+        "amount": {"type": (int, float, decimal)},
+        "entry_fee": {"type": (int, float, decimal)}
     }
 )
 
@@ -36,9 +36,9 @@ UnstakeEvent = LogEvent(
     params={
         "pool_id": {"type": str, "idx": True},
         "staker": {"type": str, "idx": True},
-        "amount": {"type": (int, float)},
-        "rewards": {"type": (int, float)},
-        "penalty": {"type": (int, float)},
+        "amount": {"type": (int, float, decimal)},
+        "rewards": {"type": (int, float, decimal)},
+        "penalty": {"type": (int, float, decimal)},
         "early": {"type": bool}
     }
 )
@@ -54,15 +54,22 @@ def create_pool(
     stake_token: str,
     reward_token: str,
     apy: float,
-    lock_duration: int,  # seconds
+    lock_duration: int,
     max_positions: int,
     stake_amount: float,
-    start_date: int = None,  # timestamp, None for immediate
+    start_date: datetime.datetime = None,
     early_withdrawal_enabled: bool = True,
-    penalty_rate: float = 0.1,  # 10% default penalty
-    entry_fee_amount: float = 0.0,
+    penalty_rate: float = None,
+    entry_fee_amount: float = None,
     entry_fee_token: str = None
 ):
+
+    # Handle default values explicitly
+    if penalty_rate is None:
+        penalty_rate = 0.1
+    if entry_fee_amount is None:
+        entry_fee_amount = 0.0
+
     assert not paused.get(), "Contract is paused"
     assert apy >= 0.0, "APY must be non-negative"
     assert lock_duration > 0, "Lock duration must be positive"
@@ -71,9 +78,9 @@ def create_pool(
     assert penalty_rate >= 0.0 and penalty_rate <= 1.0, "Penalty rate must be 0-100%"
     
     if start_date is None:
-        start_date = int(now.timestamp())
+        start_date = now
     else:
-        assert start_date >= int(now.timestamp()), "Start date cannot be in the past"
+        assert start_date >= now, "Start date cannot be in the past"
     
     if entry_fee_amount > 0.0:
         assert entry_fee_token is not None, "Entry fee token must be specified"
@@ -119,14 +126,17 @@ def create_pool(
 @export
 def stake(pool_id: str):
     assert not paused.get(), "Contract is paused"
-    assert pool_id in pools, "Pool does not exist"
     
     pool = pools[pool_id]
+    assert pool is not None, "Pool does not exist"
+    
     stats = pool_stats[pool_id]
     
-    assert int(now.timestamp()) >= pool["start_date"], "Pool has not started yet"
+    assert now >= pool["start_date"], "Pool has not started yet"
     assert stats["current_positions"] < pool["max_positions"], "Pool is full"
-    assert (pool_id, ctx.caller) not in stakes, "Already staking in this pool"
+    
+    existing_stake = stakes[pool_id, ctx.caller]
+    assert existing_stake is None, "Already staking in this pool"
     
     # Handle entry fee
     entry_fee_paid = 0.0
@@ -140,7 +150,7 @@ def stake(pool_id: str):
         entry_fee_paid = pool["entry_fee_amount"]
         
         # Track fees for creator withdrawal
-        pool["creator_fees_collected"] += entry_fee_paid
+        pool["creator_fees_collected"] = pool["creator_fees_collected"] + entry_fee_paid
         pools[pool_id] = pool
     
     # Transfer stake tokens
@@ -154,13 +164,13 @@ def stake(pool_id: str):
     # Record stake
     stakes[pool_id, ctx.caller] = {
         "amount": pool["stake_amount"],
-        "start_time": int(now.timestamp()),
+        "start_time": now,
         "entry_fee_paid": entry_fee_paid
     }
     
     # Update stats
-    stats["total_staked"] += pool["stake_amount"]
-    stats["current_positions"] += 1
+    stats["total_staked"] = stats["total_staked"] + pool["stake_amount"]
+    stats["current_positions"] = stats["current_positions"] + 1
     pool_stats[pool_id] = stats
     
     StakeEvent({
@@ -173,19 +183,21 @@ def stake(pool_id: str):
 @export
 def unstake(pool_id: str):
     assert not paused.get(), "Contract is paused"
-    assert pool_id in pools, "Pool does not exist"
-    assert (pool_id, ctx.caller) in stakes, "Not staking in this pool"
     
     pool = pools[pool_id]
+    assert pool is not None, "Pool does not exist"
+    
     stake_info = stakes[pool_id, ctx.caller]
+    assert stake_info is not None, "Not staking in this pool"
+    
     stats = pool_stats[pool_id]
     
-    current_time = int(now.timestamp())
+    current_time = now
     stake_start = stake_info["start_time"]
     time_staked = current_time - stake_start
     
     # Calculate if early withdrawal
-    is_early = time_staked < pool["lock_duration"]
+    is_early = time_staked.seconds < pool["lock_duration"]
     
     if is_early:
         assert pool["early_withdrawal_enabled"], "Early withdrawal not allowed"
@@ -195,19 +207,19 @@ def unstake(pool_id: str):
     
     if is_early:
         # Proportional rewards based on time staked
-        reward_earned = round(max_reward * time_staked / pool["lock_duration"], 8)
+        reward_earned = round(max_reward * time_staked.seconds / pool["lock_duration"], 8)
     else:
         reward_earned = max_reward
     
     # Calculate penalty
     penalty = 0.0
     if is_early and pool["penalty_rate"] > 0.0:
-        time_remaining = pool["lock_duration"] - time_staked
+        time_remaining = pool["lock_duration"] - time_staked.seconds
         penalty_factor = time_remaining / pool["lock_duration"]
         penalty = round(stake_info["amount"] * pool["penalty_rate"] * penalty_factor, 8)
         
         # Track penalty for creator withdrawal
-        pool["creator_penalties_collected"] += penalty
+        pool["creator_penalties_collected"] = pool["creator_penalties_collected"] + penalty
         pools[pool_id] = pool
     
     # Calculate final amounts
@@ -224,12 +236,12 @@ def unstake(pool_id: str):
         reward_token.transfer(amount=reward_earned, to=ctx.caller)
     
     # Update stats
-    stats["total_staked"] -= stake_info["amount"]
-    stats["current_positions"] -= 1
+    stats["total_staked"] = stats["total_staked"] - stake_info["amount"]
+    stats["current_positions"] = stats["current_positions"] - 1
     pool_stats[pool_id] = stats
     
     # Remove stake record
-    del stakes[pool_id, ctx.caller]
+    stakes[pool_id, ctx.caller] = None
     
     UnstakeEvent({
         "pool_id": pool_id,
@@ -242,9 +254,9 @@ def unstake(pool_id: str):
 
 @export
 def deposit_rewards(pool_id: str, amount: float):
-    assert pool_id in pools, "Pool does not exist"
-    
     pool = pools[pool_id]
+    assert pool is not None, "Pool does not exist"
+    
     assert ctx.caller == pool["creator"], "Only pool creator can deposit rewards"
     assert amount > 0.0, "Amount must be positive"
     
@@ -257,14 +269,14 @@ def deposit_rewards(pool_id: str, amount: float):
     )
     
     # Update pool rewards
-    pool["total_rewards_deposited"] += amount
+    pool["total_rewards_deposited"] = pool["total_rewards_deposited"] + amount
     pools[pool_id] = pool
 
 @export
 def withdraw_creator_fees(pool_id: str):
-    assert pool_id in pools, "Pool does not exist"
-    
     pool = pools[pool_id]
+    assert pool is not None, "Pool does not exist"
+    
     assert ctx.caller == pool["creator"], "Only pool creator can withdraw fees"
     
     total_fees = pool["creator_fees_collected"]
@@ -286,8 +298,9 @@ def withdraw_creator_fees(pool_id: str):
 
 @export
 def get_pool_info(pool_id: str):
-    assert pool_id in pools, "Pool does not exist"
     pool_info = pools[pool_id]
+    assert pool_info is not None, "Pool does not exist"
+    
     stats = pool_stats[pool_id]
     
     return {
@@ -297,33 +310,34 @@ def get_pool_info(pool_id: str):
 
 @export
 def get_stake_info(pool_id: str, staker: str):
-    assert (pool_id, staker) in stakes, "Stake not found"
-    return stakes[pool_id, staker]
+    stake_info = stakes[pool_id, staker]
+    assert stake_info is not None, "Stake not found"
+    return stake_info
 
 @export
 def calculate_rewards(pool_id: str, staker: str):
-    assert pool_id in pools, "Pool does not exist"
-    assert (pool_id, staker) in stakes, "Not staking in this pool"
-    
     pool = pools[pool_id]
-    stake_info = stakes[pool_id, staker]
+    assert pool is not None, "Pool does not exist"
     
-    current_time = int(now.timestamp())
+    stake_info = stakes[pool_id, staker]
+    assert stake_info is not None, "Not staking in this pool"
+    
+    current_time = now
     time_staked = current_time - stake_info["start_time"]
-    is_early = time_staked < pool["lock_duration"]
+    is_early = time_staked.seconds < pool["lock_duration"]
     
     # Calculate potential rewards
     max_reward = round((stake_info["amount"] * pool["apy"] / 100.0), 8)
     
     if is_early:
-        current_reward = round(max_reward * time_staked / pool["lock_duration"], 8)
+        current_reward = round(max_reward * time_staked.seconds / pool["lock_duration"], 8)
     else:
         current_reward = max_reward
     
     # Calculate potential penalty
     penalty = 0.0
     if is_early and pool["penalty_rate"] > 0.0:
-        time_remaining = pool["lock_duration"] - time_staked
+        time_remaining = pool["lock_duration"] - time_staked.seconds
         penalty_factor = time_remaining / pool["lock_duration"]
         penalty = round(stake_info["amount"] * pool["penalty_rate"] * penalty_factor, 8)
     
@@ -331,8 +345,8 @@ def calculate_rewards(pool_id: str, staker: str):
         "current_reward": current_reward,
         "max_reward": max_reward,
         "potential_penalty": penalty,
-        "time_staked": time_staked,
-        "time_remaining": max(0, pool["lock_duration"] - time_staked),
+        "time_staked": time_staked.seconds,
+        "time_remaining": max(0, pool["lock_duration"] - time_staked.seconds),
         "is_early": is_early
     }
 
