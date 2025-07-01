@@ -11,7 +11,7 @@ class TestStakingContract(unittest.TestCase):
         self.client.flush()
         
         # Load and submit the staking contract
-        with open('staking_contract.py') as f:
+        with open('con_staking.py') as f:
             contract_code = f.read()
         self.client.submit(contract_code, name='con_staking_test')
         
@@ -118,9 +118,9 @@ def approve(amount: float, to: str):
         self.assertEqual(pool_info['config']['apy'], 10.0)
         self.assertEqual(pool_info['stats']['total_staked'], 0.0)
         
-        # Verify event emission
+        # Verify event emission - check data_indexed for indexed fields
         self.assertEqual(result['events'][0]['event'], 'PoolCreated')
-        self.assertEqual(result['events'][0]['data']['pool_id'], '0')
+        self.assertEqual(result['events'][0]['data_indexed']['pool_id'], '0')
 
     def test_create_pool_with_all_params(self):
         """Test pool creation with all optional parameters"""
@@ -133,7 +133,7 @@ def approve(amount: float, to: str):
             lock_duration=172800,  # 2 days
             max_positions=50,
             stake_amount=200.0,
-            start_date=int(future_time.timestamp()),
+            start_date=Datetime(year=2024, month=1, day=2, hour=12, minute=0, second=0),
             early_withdrawal_enabled=False,
             penalty_rate=0.2,
             entry_fee_amount=10.0,
@@ -226,7 +226,7 @@ def approve(amount: float, to: str):
 
     def test_create_pool_past_start_date(self):
         """Test pool creation with past start date fails"""
-        past_time = Datetime(year=2023, month=12, day=31)
+        past_time = Datetime(year=2023, month=12, day=31, hour=12, minute=0, second=0)
         
         with self.assertRaises(AssertionError) as context:
             self.staking.create_pool(
@@ -236,7 +236,7 @@ def approve(amount: float, to: str):
                 lock_duration=86400,
                 max_positions=100,
                 stake_amount=100.0,
-                start_date=int(past_time.timestamp()),
+                start_date=past_time,
                 signer=self.creator,
                 environment={"now": self.test_time}
             )
@@ -312,10 +312,10 @@ def approve(amount: float, to: str):
         self.assertEqual(self.stake_token.balance_of(address=self.staker1, signer=self.staker1), 9900.0)
         self.assertEqual(self.stake_token.balance_of(address='con_staking_test', signer=self.staker1), 100.0)
         
-        # Verify event emission
+        # Verify event emission - check data_indexed for indexed fields
         self.assertEqual(result['events'][0]['event'], 'Stake')
-        self.assertEqual(result['events'][0]['data']['pool_id'], '0')
-        self.assertEqual(result['events'][0]['data']['staker'], self.staker1)
+        self.assertEqual(result['events'][0]['data_indexed']['pool_id'], '0')
+        self.assertEqual(result['events'][0]['data_indexed']['staker'], self.staker1)
 
     def test_stake_with_entry_fee(self):
         """Test staking with entry fee"""
@@ -375,7 +375,7 @@ def approve(amount: float, to: str):
             lock_duration=86400,
             max_positions=100,
             stake_amount=100.0,
-            start_date=int(future_time.timestamp()),
+            start_date=future_time,
             signer=self.creator,
             environment={"now": self.test_time}
         )
@@ -520,8 +520,9 @@ def approve(amount: float, to: str):
         # Verify rewards received
         self.assertEqual(self.reward_token.balance_of(address=self.staker1, signer=self.staker1), 10.0)  # 10% APY
         
-        # Verify event emission
+        # Verify event emission - check data_indexed for indexed fields
         self.assertEqual(result['events'][0]['event'], 'Unstake')
+        self.assertEqual(result['events'][0]['data_indexed']['pool_id'], '0')
         self.assertEqual(result['events'][0]['data']['early'], False)
         self.assertEqual(result['events'][0]['data']['penalty'], 0.0)
 
@@ -556,7 +557,7 @@ def approve(amount: float, to: str):
         )
         
         # Unstake early (after 12 hours = 50% of lock period)
-        early_time = Datetime(year=2024, month=1, day=1, hour=24, minute=0, second=0)
+        early_time = Datetime(year=2024, month=1, day=2, hour=0, minute=0, second=0)
         
         result = self.staking.unstake(
             pool_id='0',
@@ -773,13 +774,22 @@ def approve(amount: float, to: str):
             lock_duration=86400,
             max_positions=100,
             stake_amount=100.0,
+            early_withdrawal_enabled=True,
             entry_fee_amount=10.0,
             entry_fee_token='con_fee_token',
             penalty_rate=0.1,
             signer=self.creator,
             environment={"now": self.test_time}
         )
-        
+
+        # Deposit rewards        
+        self.staking.deposit_rewards(
+            pool_id='0',
+            amount=1000.0,
+            signer=self.creator,
+            environment={"now": self.test_time}
+        )
+
         # Stake to generate entry fee
         self.staking.stake(
             pool_id='0',
@@ -899,7 +909,7 @@ def approve(amount: float, to: str):
         )
         
         # Calculate rewards after 50% of period
-        partial_time = Datetime(year=2024, month=1, day=1, hour=24, minute=0, second=0)
+        partial_time = Datetime(year=2024, month=1, day=2, hour=0, minute=0, second=0)
         rewards = self.staking.calculate_rewards(
             pool_id='0',
             staker=self.staker1,
@@ -1070,9 +1080,16 @@ def approve(amount: float, to: str):
             signer=self.creator,
             environment={"now": self.test_time}
         )
-        
+
         # Stake and unstake
         self.staking.stake(pool_id='0', signer=self.staker1, environment={"now": self.test_time})
+        
+        self.staking.deposit_rewards(
+            pool_id='0',
+            amount=1000.0,
+            signer=self.creator,
+            environment={"now": self.test_time}
+        )
         
         later_time = Datetime(year=2024, month=1, day=2, hour=12, minute=0, second=1)
         result = self.staking.unstake(
