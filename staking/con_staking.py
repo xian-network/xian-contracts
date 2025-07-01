@@ -203,11 +203,11 @@ def unstake(pool_id: str):
         assert pool["early_withdrawal_enabled"], "Early withdrawal not allowed"
     
     # Calculate rewards (8 decimal precision)
-    max_reward = round((stake_info["amount"] * pool["apy"] / 100.0), 8)
+    max_reward = (stake_info["amount"] * pool["apy"] / 100.0)
     
     if is_early:
         # Proportional rewards based on time staked
-        reward_earned = round(max_reward * time_staked.seconds / pool["lock_duration"], 8)
+        reward_earned = max_reward * time_staked.seconds / pool["lock_duration"]
     else:
         reward_earned = max_reward
     
@@ -216,7 +216,7 @@ def unstake(pool_id: str):
     if is_early and pool["penalty_rate"] > 0.0:
         time_remaining = pool["lock_duration"] - time_staked.seconds
         penalty_factor = time_remaining / pool["lock_duration"]
-        penalty = round(stake_info["amount"] * pool["penalty_rate"] * penalty_factor, 8)
+        penalty = stake_info["amount"] * pool["penalty_rate"] * penalty_factor
         
         # Track penalty for creator withdrawal
         pool["creator_penalties_collected"] = pool["creator_penalties_collected"] + penalty
@@ -327,10 +327,10 @@ def calculate_rewards(pool_id: str, staker: str):
     is_early = time_staked.seconds < pool["lock_duration"]
     
     # Calculate potential rewards
-    max_reward = round((stake_info["amount"] * pool["apy"] / 100.0), 8)
+    max_reward = (stake_info["amount"] * pool["apy"] / 100.0)
     
     if is_early:
-        current_reward = round(max_reward * time_staked.seconds / pool["lock_duration"], 8)
+        current_reward = max_reward * time_staked.seconds / pool["lock_duration"]
     else:
         current_reward = max_reward
     
@@ -339,7 +339,7 @@ def calculate_rewards(pool_id: str, staker: str):
     if is_early and pool["penalty_rate"] > 0.0:
         time_remaining = pool["lock_duration"] - time_staked.seconds
         penalty_factor = time_remaining / pool["lock_duration"]
-        penalty = round(stake_info["amount"] * pool["penalty_rate"] * penalty_factor, 8)
+        penalty = stake_info["amount"] * pool["penalty_rate"] * penalty_factor
     
     return {
         "current_reward": current_reward,
