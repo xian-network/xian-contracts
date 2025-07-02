@@ -1,8 +1,10 @@
 import unittest
+import os
+
 from contracting.client import ContractingClient
 from contracting.stdlib.bridge.time import Datetime
 from contracting.stdlib.bridge.decimal import ContractingDecimal
-import os
+
 
 class TestStakingContract(unittest.TestCase):
 
@@ -528,7 +530,7 @@ def approve(amount: float, to: str):
 
     def test_unstake_early_with_penalty(self):
         """Test early unstaking with penalty"""
-        # Create pool with penalty
+        # Create pool with penalty and early withdrawal enabled
         self.staking.create_pool(
             stake_token='con_stake_token',
             reward_token='con_reward_token',
@@ -537,6 +539,7 @@ def approve(amount: float, to: str):
             max_positions=100,
             stake_amount=100.0,
             penalty_rate=0.1,  # 10% penalty
+            early_withdrawal_enabled=True,  # Explicitly enable early withdrawal
             signer=self.creator,
             environment={"now": self.test_time}
         )
@@ -559,6 +562,7 @@ def approve(amount: float, to: str):
         # Unstake early (after 12 hours = 50% of lock period)
         early_time = Datetime(year=2024, month=1, day=2, hour=0, minute=0, second=0)
         
+        # Perform unstake operation
         result = self.staking.unstake(
             pool_id='0',
             signer=self.staker1,
@@ -566,21 +570,40 @@ def approve(amount: float, to: str):
             return_full_output=True
         )
         
+        # Check if the unstake operation succeeded
+        self.assertEqual(
+            result['status_code'], 
+            0, 
+            f"Unstake failed: {result.get('result', 'Unknown error')}"
+        )
+        
         # Verify partial rewards (50% of time = 50% of rewards)
         expected_rewards = 10.0 * 0.5  # 5.0
-        self.assertEqual(self.reward_token.balance_of(address=self.staker1, signer=self.staker1), expected_rewards)
+        self.assertEqual(
+            self.reward_token.balance_of(address=self.staker1, signer=self.staker1),
+            expected_rewards,
+            "Reward amount mismatch"
+        )
         
-        # Verify penalty applied (50% remaining time = 5% penalty on stake)
+        # Verify penalty applied (50% remaining time * 10% penalty = 5% penalty on stake)
         expected_penalty = 100.0 * 0.1 * 0.5  # 5.0
         expected_return = 100.0 - expected_penalty  # 95.0
-        self.assertEqual(self.stake_token.balance_of(address=self.staker1, signer=self.staker1), 9900.0 + expected_return)
+        self.assertEqual(
+            self.stake_token.balance_of(address=self.staker1, signer=self.staker1),
+            9900.0 + expected_return,
+            "Stake return amount mismatch"
+        )
         
         # Verify event data
-        self.assertEqual(result['events'][0]['data']['early'], True)
-        self.assertEqual(result['events'][0]['data']['penalty'], expected_penalty)
+        self.assertEqual(result['events'][0]['data']['early'], True, "Early flag mismatch")
+        self.assertEqual(
+            result['events'][0]['data']['penalty'], 
+            expected_penalty, 
+            "Penalty amount mismatch"
+        )
 
     def test_unstake_early_disabled(self):
-        """Test early unstaking when disabled fails"""
+        """Test that early unstaking fails when early withdrawal is disabled"""
         # Create pool with early withdrawal disabled
         self.staking.create_pool(
             stake_token='con_stake_token',
@@ -589,7 +612,16 @@ def approve(amount: float, to: str):
             lock_duration=86400,
             max_positions=100,
             stake_amount=100.0,
-            early_withdrawal_enabled=False,
+            penalty_rate=0.1,
+            early_withdrawal_enabled=False,  # Explicitly disable early withdrawal
+            signer=self.creator,
+            environment={"now": self.test_time}
+        )
+        
+        # Deposit rewards
+        self.staking.deposit_rewards(
+            pool_id='0',
+            amount=1000.0,
             signer=self.creator,
             environment={"now": self.test_time}
         )
@@ -601,15 +633,17 @@ def approve(amount: float, to: str):
             environment={"now": self.test_time}
         )
         
-        # Try to unstake early
-        early_time = Datetime(year=2024, month=1, day=1, hour=18, minute=0, second=0)
+        # Attempt early unstake
+        early_time = Datetime(year=2024, month=1, day=2, hour=0, minute=0, second=0)
         
         with self.assertRaises(AssertionError) as context:
             self.staking.unstake(
                 pool_id='0',
                 signer=self.staker1,
-                environment={"now": early_time}
+                environment={"now": early_time},
+                return_full_output=False  # Default, raises exception directly
             )
+        
         self.assertIn("Early withdrawal not allowed", str(context.exception))
 
     def test_unstake_nonexistent_pool(self):
