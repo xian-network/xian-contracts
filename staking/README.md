@@ -246,22 +246,3 @@ pool_id = contract.create_pool(
     entry_fee_token='con_access_token'
 )
 ```
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Contributing
-
-1. Fork the repository
-2. Create feature branch
-3. Add comprehensive tests
-4. Submit pull request
-
-## Support
-
-For issues and questions, please open a GitHub issue with:
-- Contract version
-- Network/environment details  
-- Specific error messages
-- Steps to reproduce
