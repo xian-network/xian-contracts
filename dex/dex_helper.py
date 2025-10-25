@@ -1,15 +1,29 @@
-DEX_CONTRACT = "con_dex"
+DEX_CONTRACT = "con_dex_v2"
 DEX_PAIRS = "con_pairs"
 
 toks_to_pair = ForeignHash(foreign_contract=DEX_PAIRS, foreign_name='toks_to_pair')
 pairs = ForeignHash(foreign_contract=DEX_PAIRS, foreign_name='pairs')
 
+def build_deadline(minutes_from_now: float):
+    assert minutes_from_now > 0, "Deadline minutes must be positive"
+    total_seconds = int(minutes_from_now * 60)
+    assert total_seconds > 0, "Deadline must be at least one second in the future"
+    return now + datetime.timedelta(seconds=total_seconds)
+
 @export
-def buy(buy_token: str, sell_token: str, amount: float, slippage: float = 1, deadline_min: float = 1):
+def buy(
+    buy_token: str, 
+    sell_token: str, 
+    amount: float, 
+    slippage: float = 1, 
+    deadline_min: float = 1
+):
     assert amount > 0, "Amount must be positive"
-    assert slippage >= 0 and slippage <= 100, "Slippage must be between 0 and 100%"
+    assert 0 <= slippage <= 100, "Slippage must be between 0 and 100%"
     
-    token_a, token_b = (buy_token, sell_token) if buy_token < sell_token else (sell_token, buy_token)
+    token_a, token_b = (
+        (buy_token, sell_token) if buy_token < sell_token else (sell_token, buy_token)
+    )
     
     pair_id = toks_to_pair[token_a, token_b]
     assert pair_id is not None, "Pair does not exist"
@@ -25,47 +39,53 @@ def buy(buy_token: str, sell_token: str, amount: float, slippage: float = 1, dea
     
     numerator = amount * reserve_sell
     denominator = reserve_buy - amount
-    
     assert denominator > 0, "Cannot buy more than available in reserves"
     
     input_amount = (numerator / denominator) * (1 + (slippage / 100))
-    input_amount = input_amount / 0.997  # Account for 0.3% fee
-    
-    input_amount = input_amount * 1.0001
+    input_amount = input_amount / 0.997  # 0.3% fee
+    input_amount = input_amount * 1.0001  # small buffer
     
     sell_token_contract = importlib.import_module(sell_token)
     
     user_balance = sell_token_contract.balance_of(ctx.caller)
-    assert user_balance >= input_amount, f"Insufficient balance: have {user_balance}, need {input_amount}"
+    assert user_balance >= input_amount, (
+        f"Insufficient balance: have {user_balance}, need {input_amount}"
+    )
 
     sell_token_contract.transfer_from(
         amount=input_amount, 
         to=ctx.this, 
         main_account=ctx.caller
     )
-    
-    deadline = now + datetime.timedelta(minutes=deadline_min)
-    
-    importlib.import_module(sell_token).approve(amount=input_amount, to=DEX_CONTRACT)
-    
-    output_amount = dex.swapExactTokensForTokens(
+
+    sell_token_contract.approve(amount=input_amount, to=DEX_CONTRACT)
+
+    output_amount = dex.swapExactTokenForTokenSupportingFeeOnTransferTokens(
         amountIn=input_amount,
-        amountOutMin=amount * (1 - (slippage / 100)),
-        path=[pair_id],
+        amountOutMin=amount * (1 - slippage / 100),
+        pair=pair_id,
         src=sell_token,
         to=ctx.caller,
-        deadline=deadline
+        deadline=build_deadline(deadline_min)
     )
     
     return input_amount, output_amount
 
 @export
-def sell(sell_token: str, buy_token: str, amount: float, slippage: float = 1, deadline_min: float = 1):
+def sell(
+    sell_token: str, 
+    buy_token: str, 
+    amount: float, 
+    slippage: float = 1, 
+    deadline_min: float = 1
+):
     assert amount > 0, "Amount must be positive"
-    assert slippage >= 0 and slippage <= 100, "Slippage must be between 0 and 100%"
-    
-    token_a, token_b = (buy_token, sell_token) if buy_token < sell_token else (sell_token, buy_token)
-    
+    assert 0 <= slippage <= 100, "Slippage must be between 0 and 100%"
+
+    token_a, token_b = (
+        (buy_token, sell_token) if buy_token < sell_token else (sell_token, buy_token)
+    )
+
     pair_id = toks_to_pair[token_a, token_b]
     assert pair_id is not None, "Pair does not exist"
     
@@ -82,24 +102,21 @@ def sell(sell_token: str, buy_token: str, amount: float, slippage: float = 1, de
     
     sell_token_contract = importlib.import_module(sell_token)
     
-    # Transfer tokens from user to this contract
     sell_token_contract.transfer_from(
         amount=amount, 
         to=ctx.this, 
         main_account=ctx.caller
     )
     
-    deadline = now + datetime.timedelta(minutes=deadline_min)
+    sell_token_contract.approve(amount=amount, to=DEX_CONTRACT)
     
-    importlib.import_module(sell_token).approve(amount=amount, to=DEX_CONTRACT)
-    
-    output_amount = dex.swapExactTokensForTokens(
+    output_amount = dex.swapExactTokenForTokenSupportingFeeOnTransferTokens(
         amountIn=amount,
-        amountOutMin=expected_output * (1 - (slippage / 100)),
-        path=[pair_id],
+        amountOutMin=expected_output * (1 - slippage / 100),
+        pair=pair_id,
         src=sell_token,
         to=ctx.caller,
-        deadline=deadline
+        deadline=build_deadline(deadline_min)
     )
     
     return amount, output_amount
